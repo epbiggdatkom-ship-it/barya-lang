@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | Barya Lang</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: Arial, sans-serif;
+            background: #f0f7f1;
+        }
+
+        .login-box {
+            width: 100%;
+            max-width: 380px;
+            padding: 30px;
+            background: white;
+            border-radius: 18px;
+            box-shadow: 0 5px 20px #00000012;
+        }
+
+        h1 {
+            color: #247746;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #68766c;
+            text-align: center;
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            margin-top: 16px;
+            font-size: 14px;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            margin-top: 7px;
+            border: 1px solid #d4dfd6;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 13px;
+            margin-top: 22px;
+            background: #247746;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1b6037;
+        }
+
+        .message {
+            padding: 10px;
+            background: #fff1d6;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .signup {
+            text-align: center;
+            margin-top: 22px;
+            font-size: 14px;
+        }
+
+        a {
+            color: #247746;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="login-box">
+        <h1>💰 Barya Lang</h1>
+
+        <p class="subtitle">
+            Small savings, bigger goals.
+        </p>
+
+        {% for message in get_flashed_messages() %}
+            <p class="message">{{ message }}</p>
+        {% endfor %}
+
+        <form method="POST" action="{{ url_for('login') }}">
+            <label for="email">Email Address</label>
+            <input
+                type="email"
+                id="email"
+                name="email"
+                autocomplete="email"
+                required
+            >
+
+            <label for="password">Password</label>
+            <input
+                type="password"
+                id="password"
+                name="password"
+                autocomplete="current-password"
+                required
+            >
+
+            <button type="submit">Log In</button>
+        </form>
+
+        <p class="signup">
+            Don't have an account?
+            <a href="{{ url_for('register') }}">Sign up</a>
+        </p>
+    </main>
+</body>
+</html>
+
