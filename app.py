@@ -1,0 +1,302 @@
+
+import os
+import sqlite3
+import secrets
+import math
+from pathlib import Path
+from functools import wraps
+
+from flask import (
+    Flask, render_template, request,
+    redirect, url_for, session, flash, g
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+
+app = Flask(__name__)
+
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config["DATABASE"] = str(Path(__file__).with_name("barya.db"))
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(app.config["DATABASE"])
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys = ON")
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(error=None):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    with app.app_context():
+        db = get_db()
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                student_id TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS savings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL CHECK(amount > 0),
+                note TEXT DEFAULT '',
+                saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+                    ON DELETE CASCADE
+            );
+            
+            CREATE TABLE IF NOT EXISTS expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL CHECK(amount > 0),
+                category TEXT NOT NULL,
+                note TEXT DEFAULT '',
+                spent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+                    ON DELETE CASCADE
+);
+
+        """)
+        db.commit()
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        if "user_id" not in session:
+            flash("Please log in first.")
+            return redirect(url_for("login"))
+        return view(*args, **kwargs)
+    return wrapped_view
+
+
+@app.route("/")
+def home():
+    if "user_id" in session:
+        return redirect(url_for("dashboard"))
+    return redirect(url_for("login"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        student_id = request.form.get("student_id", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        if not all([full_name, student_id, email, password]):
+            flash("Please complete all fields.")
+            return render_template("register.html")
+
+        if len(password) < 8:
+            flash("Password must be at least 8 characters.")
+            return render_template("register.html")
+
+        db = get_db()
+        try:
+            db.execute(
+                """INSERT INTO users
+                   (full_name, student_id, email, password_hash)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    full_name,
+                    student_id,
+                    email,
+                    generate_password_hash(password),
+                ),
+            )
+            db.commit()
+        except sqlite3.IntegrityError:
+            flash("That email or student ID is already registered.")
+            return render_template("register.html")
+
+        flash("Account created! You can now log in.")
+        return redirect(url_for("login"))
+
+    return render_template("register.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        user = get_db().execute(
+            "SELECT * FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+
+        if user is None or not check_password_hash(
+            user["password_hash"], password
+        ):
+            flash("Incorrect email or password.")
+            return render_template("login.html")
+
+        session.clear()
+        session["user_id"] = user["id"]
+        return redirect(url_for("dashboard"))
+
+    return render_template("login.html")
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    db = get_db()
+    user = db.execute(
+        """SELECT id, full_name, student_id, email
+           FROM users WHERE id = ?""",
+        (session["user_id"],),
+    ).fetchone()
+
+    if user is None:
+        session.clear()
+        return redirect(url_for("login"))
+
+    savings = db.execute(
+        """SELECT id, amount, note, saved_at
+           FROM savings WHERE user_id = ?
+           ORDER BY saved_at DESC, id DESC""",
+        (user["id"],),
+    ).fetchall()
+
+    total = sum(item["amount"] for item in savings)
+    
+    expenses = db.execute(
+        """SELECT id, amount, category, note, spent_at
+           FROM expenses
+           WHERE user_id = ?
+           ORDER BY spent_at DESC, id DESC""",
+        (user["id"],),
+    ).fetchall()
+
+    total_expenses = sum(item["amount"] for item in expenses)
+    balance = total - total_expenses
+
+
+    return render_template(
+        "index.html",
+        user=user,
+        savings=savings,
+        expenses=expenses,
+        total=total,
+        total_expenses=total_expenses,
+        balance=balance
+    
+    )
+
+
+@app.route("/add_expense", methods=["POST"])
+@login_required
+def add_expense():
+    amount_text = request.form.get("amount", "").strip()
+    category = request.form.get("category", "").strip()
+    note = request.form.get("note", "").strip()
+
+    try:
+        amount = float(amount_text)
+    except ValueError:
+        flash("Please enter a valid expense amount.")
+        return redirect(url_for("dashboard"))
+
+    if not math.isfinite(amount) or amount <= 0:
+        flash("Expense must be greater than ₱0.")
+        return redirect(url_for("dashboard"))
+
+    if category not in [
+        "Food", "Transportation", "School Supplies",
+        "Personal", "Other"
+    ]:
+        flash("Please select a valid expense category.")
+        return redirect(url_for("dashboard"))
+
+    if len(note) > 200:
+        flash("The note must be 200 characters or fewer.")
+        return redirect(url_for("dashboard"))
+
+    db = get_db()
+
+    total_saved = db.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total "
+        "FROM savings WHERE user_id = ?",
+        (session["user_id"],),
+    ).fetchone()["total"]
+
+    total_spent = db.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total "
+        "FROM expenses WHERE user_id = ?",
+        (session["user_id"],),
+    ).fetchone()["total"]
+
+    if amount > total_saved - total_spent:
+        flash("You don't have enough remaining savings for this expense.")
+        return redirect(url_for("dashboard"))
+
+    db.execute(
+        """INSERT INTO expenses (user_id, amount, category, note)
+           VALUES (?, ?, ?, ?)""",
+        (session["user_id"], amount, category, note),
+    )
+    db.commit()
+
+    flash("Expense recorded successfully!")
+    return redirect(url_for("dashboard"))
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    flash("You have logged out.")
+    return redirect(url_for("login"))
+
+
+
+@app.route("/add_savings", methods=["POST"])
+@login_required
+def add_savings():
+    amount_text = request.form.get("amount", "").strip()
+    note = request.form.get("note", "").strip()
+
+    try:
+        amount = float(amount_text)
+    except ValueError:
+        flash("Please enter a valid amount.")
+        return redirect(url_for("dashboard"))
+
+
+    if not math.isfinite(amount) or amount <= 0:
+        flash("The amount must be greater than ₱0.")
+        return redirect(url_for("dashboard"))
+
+    if len(note) > 200:
+        flash("Your note must be 200 characters or fewer.")
+        return redirect(url_for("dashboard"))
+
+    db = get_db()
+    db.execute(
+        "INSERT INTO savings (user_id, amount, note) VALUES (?, ?, ?)",
+        (session["user_id"], amount, note),
+    )
+    db.commit()
+
+    flash("Savings added successfully!")
+    return redirect(url_for("dashboard"))
+
+init_db()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
